@@ -5,7 +5,9 @@
       "Bash(git add:*)",
       "Bash(git commit -m ':*)",
       "Bash(git push:*)",
-      "WebFetch(domain:www.k-startup.go.kr)"
+      "WebFetch(domain:www.k-startup.go.kr)",
+      "WebFetch(domain:www.data.go.kr)",
+      "Bash(python -m playwright install chromium)"
     ]
   }
 }

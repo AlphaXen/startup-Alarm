@@ -85,8 +85,8 @@ def fetch_announcements() -> list[dict]:
 
                 pbanc_sn = match.group(1)
 
-                h3 = link.query_selector("h3")
-                title = h3.inner_text().strip() if h3 else ""
+                tit = link.query_selector("p.tit")
+                title = tit.inner_text().strip() if tit else ""
                 if not title:
                     continue
 
@@ -96,9 +96,9 @@ def fetch_announcements() -> list[dict]:
                     org = lis[1].inner_text().strip()
 
                 deadline = ""
-                cat = link.query_selector(".category")
-                if cat:
-                    deadline = cat.inner_text().strip()
+                deadline_el = link.query_selector(".right p.txt")
+                if deadline_el:
+                    deadline = deadline_el.inner_text().strip()
 
                 items.append({
                     "pbancSn": pbanc_sn,
