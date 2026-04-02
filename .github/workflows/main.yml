@@ -52,4 +52,5 @@ jobs:
           git add seen_ids.json
           # 변경사항이 있을 때만 커밋 (없으면 스킵)
           git diff --staged --quiet || git commit -m "chore: seen_ids 업데이트 [skip ci]"
+          git pull --rebase origin main
           git push
