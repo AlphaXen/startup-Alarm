@@ -67,6 +67,9 @@ def fetch_announcements() -> list[dict]:
     try:
         resp = requests.get(LIST_URL, headers=HEADERS, timeout=15)
         resp.raise_for_status()
+        log.info(f"HTTP {resp.status_code}, 응답 크기: {len(resp.text)} bytes")
+        log.info(f"go_view 포함 여부: {'go_view' in resp.text}")
+        log.info(f"응답 미리보기: {resp.text[:300]}")
         soup = BeautifulSoup(resp.text, "html.parser")
 
         items = []
