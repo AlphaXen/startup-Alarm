@@ -252,7 +252,7 @@ def main():
     announcements = fetch_announcements()
     if not announcements:
         log.warning("공고 목록을 가져오지 못했습니다. 종료.")
-        sys.exit(1)
+        sys.exit(0)
 
     new_items = []
     current_ids = set()
