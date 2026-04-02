@@ -38,13 +38,17 @@ jobs:
       - name: 패키지 설치
         run: pip install -r requirements.txt
 
-      # 4. 모니터링 실행
+      # 4. Playwright 브라우저 설치
+      - name: Playwright Chromium 설치
+        run: playwright install chromium --with-deps
+
+      # 5. 모니터링 실행
       - name: 모니터링 실행
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python checker.py
 
-      # 5. seen_ids.json 변경 시 자동 커밋 (상태 영구 보존 핵심!)
+      # 6. seen_ids.json 변경 시 자동 커밋 (상태 영구 보존 핵심!)
       - name: seen_ids.json 커밋 및 푸시
         run: |
           git config user.name "github-actions[bot]"

@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import logging
-from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
 # ── 환경변수에서 설정 읽기 (GitHub Secret 연동) ──
@@ -18,23 +17,6 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 BASE_URL = "https://www.k-startup.go.kr"
 LIST_URL = f"{BASE_URL}/web/contents/bizpbanc-ongoing.do"
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-}
 
 # GitHub Actions 환경에서는 __file__ 기준 경로 사용
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,69 +50,70 @@ def save_seen(ids: set):
 
 def fetch_announcements() -> list[dict]:
     """
-    requests.Session으로 홈페이지 쿠키를 먼저 받아 봇 감지 우회 후 HTML 파싱
+    Playwright로 실제 브라우저처럼 페이지를 로드해 공고 목록 파싱
     """
+    from playwright.sync_api import sync_playwright
+
     try:
-        session = requests.Session()
-        session.headers.update(HEADERS)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            page = browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            )
 
-        # 1단계: 홈페이지 접속으로 세션 쿠키 획득
-        session.get(BASE_URL, timeout=15)
+            log.info("페이지 로드 중...")
+            page.goto(LIST_URL, wait_until="networkidle", timeout=30000)
+            log.info("페이지 로드 완료")
 
-        # 2단계: 공고 목록 페이지 요청
-        session.headers.update({"Referer": BASE_URL + "/"})
-        resp = session.get(LIST_URL, timeout=15)
-        resp.raise_for_status()
+            # go_view(숫자) 패턴이 있는 <a> 태그 수집
+            links = page.query_selector_all("a[href*='go_view']")
+            log.info(f"go_view 링크 {len(links)}개 발견")
 
-        log.info(f"HTTP {resp.status_code}, 응답 크기: {len(resp.text)} bytes")
-        log.info(f"go_view 포함 여부: {'go_view' in resp.text}")
-        log.info(f"응답 미리보기: {resp.text[:500]}")
-        soup = BeautifulSoup(resp.text, "html.parser")
+            items = []
+            for link in links:
+                href = link.get_attribute("href") or ""
+                match = re.search(r"go_view\((\d+)\)", href)
+                if not match:
+                    continue
 
-        items = []
-        # href에 go_view(숫자) 패턴이 있는 <a> 태그 탐색
-        for a_tag in soup.find_all("a", href=lambda h: h and "go_view" in h):
-            href = a_tag.get("href", "")
-            match = re.search(r"go_view\((\d+)\)", href)
-            if not match:
-                continue
+                pbanc_sn = match.group(1)
 
-            pbanc_sn = match.group(1)
+                h3 = link.query_selector("h3")
+                title = h3.inner_text().strip() if h3 else ""
+                if not title:
+                    continue
 
-            # 제목: <h3> 태그
-            h3 = a_tag.find("h3")
-            title = h3.get_text(strip=True) if h3 else ""
-            if not title:
-                continue
-
-            # 주관기관: ul > li 중 두 번째 항목
-            org = ""
-            ul = a_tag.find("ul")
-            if ul:
-                lis = ul.find_all("li")
+                org = ""
+                lis = link.query_selector_all("ul li")
                 if len(lis) >= 2:
-                    org = lis[1].get_text(strip=True)
+                    org = lis[1].inner_text().strip()
 
-            # 마감일/카테고리: <span class="category">
-            deadline = ""
-            cat_el = a_tag.find("span", class_="category")
-            if cat_el:
-                deadline = cat_el.get_text(strip=True)
+                deadline = ""
+                cat = link.query_selector(".category")
+                if cat:
+                    deadline = cat.inner_text().strip()
 
-            detail_url = f"{LIST_URL}?pbancSn={pbanc_sn}"
+                items.append({
+                    "pbancSn": pbanc_sn,
+                    "title": title,
+                    "url": f"{LIST_URL}?pbancSn={pbanc_sn}",
+                    "org": org,
+                    "deadline": deadline,
+                })
 
-            items.append({
-                "pbancSn": pbanc_sn,
-                "title": title,
-                "url": detail_url,
-                "org": org,
-                "deadline": deadline,
-            })
+            browser.close()
 
         if items:
-            log.info(f"HTML 파싱으로 {len(items)}개 공고 수집 완료")
+            log.info(f"Playwright로 {len(items)}개 공고 수집 완료")
         else:
-            log.warning("공고 목록을 찾지 못함. 사이트 HTML 구조가 변경됐을 수 있습니다.")
+            log.warning("공고 목록을 찾지 못함. 사이트 HTML 구조를 확인하세요.")
 
         return items
 
@@ -195,16 +178,11 @@ def send_slack(item: dict):
 
 KST = timezone(timedelta(hours=9))
 
-DAYTIME_START = 6   # KST 06시
-DAYTIME_END   = 21  # KST 21시
+DAYTIME_START = 6
+DAYTIME_END   = 21
 NIGHT_INTERVAL_MINUTES = 120
 
 def should_run() -> bool:
-    """
-    KST 현재 시각 기준으로 실행 여부를 판단.
-    - 06:00 ~ 21:00 : 항상 실행 (20분마다 cron과 동일)
-    - 21:00 ~ 06:00 : 2시간 간격의 정각에만 실행 (23:00 / 01:00 / 03:00 / 05:00)
-    """
     now_kst = datetime.now(KST)
     hour = now_kst.hour
     minute = now_kst.minute
