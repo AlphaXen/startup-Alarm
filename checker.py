@@ -4,20 +4,20 @@ K-Startup 모집공고 새 글 알림 봇 (GitHub Actions 버전)
 - seen_ids.json을 git에 커밋해서 상태 영구 보존
 """
 
+import re
 import requests
 import json
 import os
 import sys
 import logging
+from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
 # ── 환경변수에서 설정 읽기 (GitHub Secret 연동) ──
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 BASE_URL = "https://www.k-startup.go.kr"
-
-# ★ 브라우저 F12 → Network → XHR 탭에서 실제 API 주소 확인 후 수정
-LIST_API = f"{BASE_URL}/web/api/bizpbanc/ongoing/list.do"
+LIST_URL = f"{BASE_URL}/web/contents/bizpbanc-ongoing.do"
 
 HEADERS = {
     "User-Agent": (
@@ -25,16 +25,14 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Referer": f"{BASE_URL}/web/contents/bizpbanc-ongoing.do",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "X-Requested-With": "XMLHttpRequest",
+    "Referer": LIST_URL,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 # GitHub Actions 환경에서는 __file__ 기준 경로 사용
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SEEN_FILE = os.path.join(BASE_DIR, "seen_ids.json")
 
-# GitHub Actions는 stdout으로만 로그 출력 (파일 로그 없음)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -63,89 +61,63 @@ def save_seen(ids: set):
 
 def fetch_announcements() -> list[dict]:
     """
-    방법 1: 내부 JSON API 직접 호출
-    실패 시 방법 2(Selenium)로 자동 전환
+    requests + BeautifulSoup으로 HTML 직접 파싱
+    k-startup 사이트는 JSON API 없이 HTML로 렌더링됨
     """
-    params = {"pageIndex": 1, "pageUnit": 20}
     try:
-        resp = requests.get(LIST_API, headers=HEADERS, params=params, timeout=15)
+        resp = requests.get(LIST_URL, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-
-        # ★ 실제 API 응답 구조에 맞게 키 경로 수정 필요
-        # 예: data["result"]["list"] / data["data"] / data["items"] 등
-        items = data.get("result", data.get("list", data.get("data", [])))
-        if isinstance(items, dict):
-            items = items.get("list", [])
-
-        if not items:
-            log.warning("API 응답에서 목록을 찾지 못함. 응답 미리보기:")
-            log.warning(str(data)[:300])
-        else:
-            log.info(f"API로 {len(items)}개 공고 수집 완료")
-        return items
-
-    except Exception as e:
-        log.error(f"API 호출 실패: {e}")
-        log.info("Selenium 방식으로 재시도...")
-        return fetch_announcements_selenium()
-
-
-def fetch_announcements_selenium() -> list[dict]:
-    """
-    방법 2: Selenium + headless Chrome
-    GitHub Actions ubuntu-latest에는 Chrome이 기본 설치되어 있음
-    """
-    try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-
-        options = Options()
-        options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument(f"user-agent={HEADERS['User-Agent']}")
-
-        # GitHub Actions 환경: chromedriver 경로 자동 탐색
-        service = Service()
-        driver = webdriver.Chrome(service=service, options=options)
-
-        driver.get(f"{BASE_URL}/web/contents/bizpbanc-ongoing.do")
-        wait = WebDriverWait(driver, 20)
-
-        # ★ 실제 HTML 구조에 맞게 CSS selector 수정 필요
-        wait.until(EC.presence_of_element_located(
-            (By.CSS_SELECTOR, ".list-area li, .board-list tbody tr, .card-list li")
-        ))
+        soup = BeautifulSoup(resp.text, "html.parser")
 
         items = []
-        rows = driver.find_elements(
-            By.CSS_SELECTOR, ".list-area li, .board-list tbody tr, .card-list li"
-        )
-        for row in rows:
-            try:
-                title_el = row.find_element(By.CSS_SELECTOR, ".tit, .title, td.subject a, .card-title")
-                link_el = row.find_element(By.CSS_SELECTOR, "a")
-                href = link_el.get_attribute("href") or ""
-                items.append({
-                    "id": href or title_el.text,
-                    "title": title_el.text.strip(),
-                    "url": href,
-                })
-            except Exception:
+        # href에 go_view(숫자) 패턴이 있는 <a> 태그 탐색
+        for a_tag in soup.find_all("a", href=lambda h: h and "go_view" in h):
+            href = a_tag.get("href", "")
+            match = re.search(r"go_view\((\d+)\)", href)
+            if not match:
                 continue
 
-        driver.quit()
-        log.info(f"Selenium으로 {len(items)}개 공고 수집 완료")
+            pbanc_sn = match.group(1)
+
+            # 제목: <h3> 태그
+            h3 = a_tag.find("h3")
+            title = h3.get_text(strip=True) if h3 else ""
+            if not title:
+                continue
+
+            # 주관기관: ul > li 중 두 번째 항목
+            org = ""
+            ul = a_tag.find("ul")
+            if ul:
+                lis = ul.find_all("li")
+                if len(lis) >= 2:
+                    org = lis[1].get_text(strip=True)
+
+            # 마감일/카테고리: <span class="category">
+            deadline = ""
+            cat_el = a_tag.find("span", class_="category")
+            if cat_el:
+                deadline = cat_el.get_text(strip=True)
+
+            detail_url = f"{LIST_URL}?pbancSn={pbanc_sn}"
+
+            items.append({
+                "pbancSn": pbanc_sn,
+                "title": title,
+                "url": detail_url,
+                "org": org,
+                "deadline": deadline,
+            })
+
+        if items:
+            log.info(f"HTML 파싱으로 {len(items)}개 공고 수집 완료")
+        else:
+            log.warning("공고 목록을 찾지 못함. 사이트 HTML 구조가 변경됐을 수 있습니다.")
+
         return items
 
     except Exception as e:
-        log.error(f"Selenium 실패: {e}")
+        log.error(f"공고 수집 실패: {e}")
         return []
 
 
@@ -157,15 +129,15 @@ def send_slack(item: dict):
         return
 
     title = item.get("title", "제목 없음")
-    url = item.get("url") or item.get("link") or f"{BASE_URL}/web/contents/bizpbanc-ongoing.do"
-    org = item.get("org") or item.get("organizer") or item.get("InstNm") or ""
-    deadline = item.get("deadline") or item.get("endDate") or item.get("pbancEndDt") or ""
+    url = item.get("url") or LIST_URL
+    org = item.get("org", "")
+    deadline = item.get("deadline", "")
 
     meta_parts = []
     if org:
         meta_parts.append(f"🏢 주관: {org}")
     if deadline:
-        meta_parts.append(f"📅 마감: {deadline}")
+        meta_parts.append(f"📅 {deadline}")
     meta_text = "  |  ".join(meta_parts)
 
     blocks = [
@@ -205,11 +177,9 @@ def send_slack(item: dict):
 
 KST = timezone(timedelta(hours=9))
 
-# KST 06:00 ~ 21:00 → 20분마다 실행 (Actions cron 주기와 동일, 그냥 통과)
-# KST 21:00 ~ 06:00 → 2시간마다 실행 (20분마다 트리거되지만 조건 불충족 시 조기 종료)
 DAYTIME_START = 6   # KST 06시
 DAYTIME_END   = 21  # KST 21시
-NIGHT_INTERVAL_MINUTES = 120  # 야간 실행 간격 (2시간)
+NIGHT_INTERVAL_MINUTES = 120
 
 def should_run() -> bool:
     """
@@ -225,11 +195,8 @@ def should_run() -> bool:
         log.info(f"주간 시간대 ({hour:02d}:{minute:02d} KST) → 실행")
         return True
 
-    # 야간: 2시간 간격 정각(±10분 허용)에만 실행
-    # 대상 시각: 21, 23, 01, 03, 05시 정각
     night_hours = {21, 23, 1, 3, 5}
     if hour in night_hours and minute < (NIGHT_INTERVAL_MINUTES // 6):
-        # cron이 20분마다 실행되므로 첫 번째 트리거(0~19분)만 통과
         log.info(f"야간 시간대 ({hour:02d}:{minute:02d} KST) → 2시간 간격 실행")
         return True
 
@@ -258,14 +225,7 @@ def main():
     current_ids = set()
 
     for item in announcements:
-        # ★ 실제 API 응답의 고유 ID 필드명으로 수정 (예: pbancSn, bizPbancSn 등)
-        ann_id = str(
-            item.get("pbancSn")
-            or item.get("bizPbancSn")
-            or item.get("id")
-            or item.get("seq")
-            or item.get("title", "")
-        )
+        ann_id = str(item.get("pbancSn", ""))
         if not ann_id:
             continue
         current_ids.add(ann_id)
@@ -274,7 +234,6 @@ def main():
             new_items.append(item)
 
     if is_first_run:
-        # 최초 실행 시엔 알림 없이 현재 목록만 저장
         log.info(f"최초 실행: {len(current_ids)}개 공고를 기준으로 저장. 알림은 다음 실행부터 발송됩니다.")
     elif new_items:
         log.info(f"새 공고 {len(new_items)}개 발견!")
