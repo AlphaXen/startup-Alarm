@@ -4,7 +4,8 @@
       "Bash(git pull:*)",
       "Bash(git add:*)",
       "Bash(git commit -m ':*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "WebFetch(domain:www.k-startup.go.kr)"
     ]
   }
 }
