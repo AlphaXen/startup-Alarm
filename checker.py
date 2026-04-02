@@ -173,9 +173,8 @@ def send_slack(item: dict):
     except Exception as e:
         log.error(f"슬랙 발송 실패: {e}")
 
-
+#add 
 # ── 시간대 판단 ──────────────────────────────────
-
 KST = timezone(timedelta(hours=9))
 
 DAYTIME_START = 6
