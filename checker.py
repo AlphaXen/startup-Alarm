@@ -25,8 +25,15 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Referer": LIST_URL,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 }
 
 # GitHub Actions 환경에서는 __file__ 기준 경로 사용
@@ -61,15 +68,23 @@ def save_seen(ids: set):
 
 def fetch_announcements() -> list[dict]:
     """
-    requests + BeautifulSoup으로 HTML 직접 파싱
-    k-startup 사이트는 JSON API 없이 HTML로 렌더링됨
+    requests.Session으로 홈페이지 쿠키를 먼저 받아 봇 감지 우회 후 HTML 파싱
     """
     try:
-        resp = requests.get(LIST_URL, headers=HEADERS, timeout=15)
+        session = requests.Session()
+        session.headers.update(HEADERS)
+
+        # 1단계: 홈페이지 접속으로 세션 쿠키 획득
+        session.get(BASE_URL, timeout=15)
+
+        # 2단계: 공고 목록 페이지 요청
+        session.headers.update({"Referer": BASE_URL + "/"})
+        resp = session.get(LIST_URL, timeout=15)
         resp.raise_for_status()
+
         log.info(f"HTTP {resp.status_code}, 응답 크기: {len(resp.text)} bytes")
         log.info(f"go_view 포함 여부: {'go_view' in resp.text}")
-        log.info(f"응답 미리보기: {resp.text[:300]}")
+        log.info(f"응답 미리보기: {resp.text[:500]}")
         soup = BeautifulSoup(resp.text, "html.parser")
 
         items = []
