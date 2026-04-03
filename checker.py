@@ -15,6 +15,9 @@ from datetime import datetime, timezone, timedelta
 # ── 환경변수에서 설정 읽기 (GitHub Secret 연동) ──
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
+# ── 알림 필터 키워드 (제목에 하나라도 포함되면 알림 발송) ──
+KEYWORDS = ["예비", "수산"]
+
 BASE_URL = "https://www.k-startup.go.kr"
 LIST_URL = f"{BASE_URL}/web/contents/bizpbanc-ongoing.do"
 
@@ -233,7 +236,11 @@ def main():
     elif new_items:
         log.info(f"새 공고 {len(new_items)}개 발견!")
         for item in new_items:
-            log.info(f"  → {item.get('title', '제목없음')}")
+            title = item.get("title", "")
+            if not any(kw in title for kw in KEYWORDS):
+                log.info(f"  → 키워드 미해당 스킵: {title}")
+                continue
+            log.info(f"  → 알림 발송: {title}")
             send_slack(item)
         log.info("알림 발송 완료")
     else:
